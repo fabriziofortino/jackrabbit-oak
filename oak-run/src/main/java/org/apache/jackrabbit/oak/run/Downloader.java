@@ -39,8 +39,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.concurrent.Exchanger;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -147,6 +149,17 @@ public class Downloader implements Closeable {
         executorService.shutdown();
     }
 
+    private static class BufferHolder {
+
+        public BufferHolder(byte[] buffer) {
+            this.buffer = buffer;
+            this.bytesRead = 0;
+        }
+
+        byte[] buffer;
+        int bytesRead;
+    }
+
     private class DownloaderWorker implements Callable<ItemResponse> {
 
         private final Item item;
@@ -176,15 +189,42 @@ public class Downloader implements Closeable {
             long size = 0;
             try (InputStream inputStream = sourceUrl.getInputStream();
                  FileOutputStream outputStream = new FileOutputStream(destinationPath.toFile())) {
-                byte[] buffer = new byte[bufferSize];
-                int bytesRead;
-                while ((bytesRead = inputStream.read(buffer)) != -1) {
-                    if (md != null) {
-                        md.update(buffer, 0, bytesRead);
+
+                BufferHolder buffer1 = new BufferHolder(new byte[bufferSize]);
+                BufferHolder buffer2 = new BufferHolder(new byte[bufferSize]);
+                BufferHolder SENTINEL = new BufferHolder(new byte[0]);
+                Exchanger<BufferHolder> exchanger = new Exchanger<>();
+
+                ExecutorService executor = Executors.newSingleThreadExecutor();
+                MessageDigest finalMd = md;
+                Future<?> writeTask = executor.submit(() -> {
+                    try {
+                        BufferHolder writeBuffer = buffer2;
+                        while (true) {
+                            writeBuffer = exchanger.exchange(writeBuffer);
+                            if (writeBuffer == SENTINEL) {
+                                return;
+                            }
+                            if (finalMd != null) {
+                                finalMd.update(writeBuffer.buffer, 0, writeBuffer.bytesRead);
+                            }
+                            outputStream.write(writeBuffer.buffer, 0, writeBuffer.bytesRead);
+                        }
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
                     }
-                    outputStream.write(buffer, 0, bytesRead);
+                });
+
+                int bytesRead;
+                BufferHolder readBuffer = buffer1;
+                while ((bytesRead = inputStream.read(readBuffer.buffer)) != -1) {
+                    readBuffer.bytesRead = bytesRead;
                     size += bytesRead;
+                    readBuffer = exchanger.exchange(readBuffer);
                 }
+                exchanger.exchange(SENTINEL);
+                writeTask.get();
+                executor.shutdown();
             }
 
             if (md != null) {
@@ -248,7 +288,7 @@ public class Downloader implements Closeable {
                     if (retried == Downloader.this.maxRetries) {
                         // Get a string of all exceptions that were thrown
                         StringBuilder summary = new StringBuilder();
-                        for (Map.Entry<String, Integer> entry: exceptions.entrySet()) {
+                        for (Map.Entry<String, Integer> entry : exceptions.entrySet()) {
                             summary.append("\n\t").append(entry.getValue()).append("x: ").append(entry.getKey());
                         }
 
@@ -260,7 +300,8 @@ public class Downloader implements Closeable {
                                 callable, waitTime, retried, e);
                         try {
                             Thread.sleep(waitTime);
-                        } catch (InterruptedException ignore) {}
+                        } catch (InterruptedException ignore) {
+                        }
                     }
                 } catch (Exception e) {
                     throw new RuntimeException("Callable " + callable + " threw an unrecoverable exception", e);
