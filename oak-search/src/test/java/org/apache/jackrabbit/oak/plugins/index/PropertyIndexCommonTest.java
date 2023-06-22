@@ -434,7 +434,10 @@ public abstract class PropertyIndexCommonTest extends AbstractQueryTest {
         test.addChild("a").setProperty("booleanField", true);
         root.commit();
 
-        assertEventually(() -> assertQuery("select [jcr:path] from [nt:base] where [booleanField] in('true', 'InvalidBool')", singletonList("/test/a")));
+        assertEventually(() -> {
+            assertQuery("select [jcr:path] from [nt:base] where [booleanField] in('true', 'True')", singletonList("/test/a"));
+            assertQuery("select [jcr:path] from [nt:base] where [booleanField] in('true', 'InvalidBool')", singletonList("/test/a"));
+        });
     }
 
     protected String explain(String query) {
