@@ -150,8 +150,11 @@ public class ElasticResultRowAsyncIterator implements ElasticQueryIterator, Elas
         // This is being done so that we can log the caller stack trace in case of any exception from ES and not just the trace of the async query thread.
         Throwable error = queryErrorRef.get();
         if (error != null) {
-            error.fillInStackTrace();
-            LOG.error("Error while fetching results from Elastic for [{}]", indexPlan.getFilter(), error);
+            // we log this error at debug level here since we already log it at warn or error level in the onFailure callback of
+            // the scanner, and we want to avoid to log it multiple times at high level. We still want to log it here since this
+            // is the point where the caller gets aware of the error, and we want to provide as much information as possible
+            // to understand the root cause of the issue.
+            LOG.debug("Error while fetching results from Elastic for [{}]", indexPlan.getFilter(), error.fillInStackTrace());
             return false;
         }
 
@@ -427,8 +430,17 @@ public class ElasticResultRowAsyncIterator implements ElasticQueryIterator, Elas
             }
 
             if (t instanceof ElasticsearchException) {
-                LOG.error("Elastic could not process the request for jcr query [{}] :: Corresponding ES request {} :: ES Response {} : closing scanner, notifying listeners",
-                        indexPlan.getFilter(), searchRequest, ((ElasticsearchException) t).error(), t);
+                ElasticsearchException ese = (ElasticsearchException) t;
+                // we log bad request errors at warn level since they are often caused by user errors (e.g. malformed query)
+                // and they are not critical for the system stability. Other errors are logged at error level since they
+                // could indicate issues with the Elastic cluster that might require attention.
+                if (ese.status() == 400) {
+                    LOG.warn("Elastic returned a bad request error for jcr query [{}] :: Corresponding ES request {} :: ES Response {} : closing scanner, notifying listeners",
+                            indexPlan.getFilter(), searchRequest, ese.error());
+                } else {
+                    LOG.error("Elastic could not process the request for jcr query [{}] :: Corresponding ES request {} :: ES Response {} : closing scanner, notifying listeners",
+                            indexPlan.getFilter(), searchRequest, ((ElasticsearchException) t).error(), t);
+                }
             } else {
                 LOG.error("Error retrieving data for jcr query [{}] :: Corresponding ES request {} : closing scanner, notifying listeners",
                         indexPlan.getFilter(), searchRequest, t);
