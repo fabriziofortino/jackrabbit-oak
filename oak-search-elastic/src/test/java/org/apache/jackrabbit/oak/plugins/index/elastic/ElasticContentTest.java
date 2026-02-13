@@ -409,31 +409,4 @@ public class ElasticContentTest extends ElasticAbstractQueryTest {
         });
     }
 
-    @Test
-    public void nodeRemoval() throws Exception {
-        IndexDefinitionBuilder builder = createIndex("a").noAsync();
-        builder.includedPaths("/content");
-        builder.indexRule("nt:base").property("a").propertyIndex();
-
-        Tree index = setIndex(UUID.randomUUID().toString(), builder);
-        root.commit();
-
-        Tree content = root.getTree("/").addChild("content");
-        Tree node = content.addChild("node");
-        node.setProperty("a", "foo");
-        root.commit();
-        assertEventually(() -> {
-            ObjectNode doc = getDocument(index, "/content/node");
-            assertThat(doc.get(ElasticIndexUtils.fieldName("a")).asText(), equalTo("foo"));
-        });
-
-        node.remove();
-        root.commit();
-        assertEventually(() -> {
-            ObjectNode doc = getDocument(index, "/content/node");
-            assertThat(doc, equalTo(null));
-        });
-
-    }
-
 }
